@@ -1,0 +1,258 @@
+name: Run tests with inline patches
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        required: true
+        type: string
+
+      test_patch_b64:
+        required: true
+        type: string
+
+      golden_patch_b64:
+        required: true
+        type: string
+
+      base_patch_b64:
+        required: false
+        default: ""
+        type: string
+
+      test_cmd:
+        required: true
+        type: string
+
+      callback_url:
+        required: true
+        type: string
+
+      submission_id:
+        required: true
+        type: string
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          
+      - name: Make runner environment CLI-friendly (history/home)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Ensure HOME is set and writable
+          export HOME="${HOME:-/home/runner}"
+          mkdir -p "$HOME"
+
+          # Create common readline / REPL history files (harmless if unused)
+          touch "$HOME/.python_history" || true
+          touch "$HOME/.mpmath_history" || true
+          touch "$HOME/.history" || true
+          touch "$HOME/.ipython_history" || true
+
+          # Some tools look for XDG locations
+          export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
+          export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+          export XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+          mkdir -p "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
+
+          # Optional: make sure python can write bytecode, caches, etc.
+          mkdir -p "$HOME/.local" "$HOME/.cache/pip" || true
+
+          echo "HOME=$HOME"
+          ls -la "$HOME" | head
+
+      - name: Decode patches
+        shell: bash
+        env:
+          TEST_PATCH_B64: ${{ inputs.test_patch_b64 }}
+          GOLDEN_PATCH_B64: ${{ inputs.golden_patch_b64 }}
+          BASE_PATCH_B64: ${{ inputs.base_patch_b64 }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/patches /tmp/logs
+
+          decode () {
+            local name="$1"
+            local b64="$2"
+            if [[ -z "$b64" ]]; then
+              return 0
+            fi
+            printf '%s' "$b64" | base64 -d > "/tmp/patches/$name"
+          }
+
+          decode "010_test.patch"   "$TEST_PATCH_B64"
+          decode "020_golden.patch" "$GOLDEN_PATCH_B64"
+          decode "000_base.patch"   "$BASE_PATCH_B64"
+
+          ls -la /tmp/patches
+
+      - name: Check1 – (base?) + golden
+        id: check1
+        shell: bash
+        run: |
+          set +e; set -o pipefail
+          git checkout --force "${{ inputs.commit_sha }}"
+          git reset --hard; git clean -fdx
+
+          APPLY_OK=true
+
+          if [[ -f /tmp/patches/000_base.patch ]]; then
+            git apply /tmp/patches/000_base.patch 2>&1 | tee /tmp/logs/c1_apply.log
+            if [[ ${PIPESTATUS[0]} -ne 0 ]]; then
+              APPLY_OK=false
+              echo "c1_exit=100" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+          if [[ "$APPLY_OK" == "true" ]]; then
+            git apply /tmp/patches/020_golden.patch 2>&1 | tee -a /tmp/logs/c1_apply.log
+            if [[ ${PIPESTATUS[0]} -ne 0 ]]; then
+              APPLY_OK=false
+              echo "c1_exit=101" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+          if [[ "$APPLY_OK" == "true" ]]; then
+            bash -lc "${{ inputs.test_cmd }}" 2>&1 | tee /tmp/logs/c1_test.log
+            echo "c1_exit=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "c1_apply_ok=$APPLY_OK" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Check2 – (base?) + test
+        id: check2
+        shell: bash
+        run: |
+          set +e; set -o pipefail
+          git checkout --force "${{ inputs.commit_sha }}"
+          git reset --hard; git clean -fdx
+
+          APPLY_OK=true
+
+          if [[ -f /tmp/patches/000_base.patch ]]; then
+            git apply /tmp/patches/000_base.patch 2>&1 | tee /tmp/logs/c2_apply.log
+            if [[ ${PIPESTATUS[0]} -ne 0 ]]; then
+              APPLY_OK=false
+              echo "c2_exit=100" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+          if [[ "$APPLY_OK" == "true" ]]; then
+            git apply /tmp/patches/010_test.patch 2>&1 | tee -a /tmp/logs/c2_apply.log
+            if [[ ${PIPESTATUS[0]} -ne 0 ]]; then
+              APPLY_OK=false
+              echo "c2_exit=101" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+          if [[ "$APPLY_OK" == "true" ]]; then
+            bash -lc "${{ inputs.test_cmd }}" 2>&1 | tee /tmp/logs/c2_test.log
+            echo "c2_exit=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "c2_apply_ok=$APPLY_OK" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Check3 – (base?) + golden + test
+        id: check3
+        shell: bash
+        run: |
+          set +e; set -o pipefail
+          git checkout --force "${{ inputs.commit_sha }}"
+          git reset --hard; git clean -fdx
+
+          APPLY_OK=true
+
+          if [[ -f /tmp/patches/000_base.patch ]]; then
+            git apply /tmp/patches/000_base.patch 2>&1 | tee /tmp/logs/c3_apply.log
+            if [[ ${PIPESTATUS[0]} -ne 0 ]]; then
+              APPLY_OK=false
+              echo "c3_exit=100" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+          if [[ "$APPLY_OK" == "true" ]]; then
+            git apply /tmp/patches/020_golden.patch 2>&1 | tee -a /tmp/logs/c3_apply.log
+            if [[ ${PIPESTATUS[0]} -ne 0 ]]; then
+              APPLY_OK=false
+              echo "c3_exit=101" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+          if [[ "$APPLY_OK" == "true" ]]; then
+            git apply /tmp/patches/010_test.patch 2>&1 | tee -a /tmp/logs/c3_apply.log
+            if [[ ${PIPESTATUS[0]} -ne 0 ]]; then
+              APPLY_OK=false
+              echo "c3_exit=102" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+          if [[ "$APPLY_OK" == "true" ]]; then
+            bash -lc "${{ inputs.test_cmd }}" 2>&1 | tee /tmp/logs/c3_test.log
+            echo "c3_exit=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "c3_apply_ok=$APPLY_OK" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Callback to n8n
+        if: always()
+        shell: bash
+        env:
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          SUBMISSION_ID: ${{ inputs.submission_id }}
+
+          C1_APPLY_OK: ${{ steps.check1.outputs.c1_apply_ok }}
+          C1_EXIT: ${{ steps.check1.outputs.c1_exit }}
+
+          C2_APPLY_OK: ${{ steps.check2.outputs.c2_apply_ok }}
+          C2_EXIT: ${{ steps.check2.outputs.c2_exit }}
+
+          C3_APPLY_OK: ${{ steps.check3.outputs.c3_apply_ok }}
+          C3_EXIT: ${{ steps.check3.outputs.c3_exit }}
+        run: |
+          set -euo pipefail
+          tailb(){ [ -f "$1" ] && tail -c 900000 "$1" | base64 -w0 || echo ""; }
+
+          C1_B64="$(tailb /tmp/logs/c1_test.log)"
+          C2_B64="$(tailb /tmp/logs/c2_test.log)"
+          C3_B64="$(tailb /tmp/logs/c3_test.log)"
+
+          export C1_B64 C2_B64 C3_B64
+
+          python3 - <<'PY' | curl -sS -X POST "$CALLBACK_URL" -H "Content-Type: application/json" -d @-
+          import json, os
+
+          def to_bool(v):
+              return str(v).lower() in ("1","true","yes","on")
+
+          payload = {
+            "submission_id": os.environ["SUBMISSION_ID"],
+            "repo": os.environ["GITHUB_REPOSITORY"],
+            "github_run": os.environ["GITHUB_RUN_ID"],
+            "commit": "${{ inputs.commit_sha }}",
+
+            "check1_exit": int(os.environ.get("C1_EXIT","100")),
+            "check1_apply_ok": to_bool(os.environ.get("C1_APPLY_OK")),
+            "check1_log_b64": os.environ.get("C1_B64",""),
+
+            "check2_exit": int(os.environ.get("C2_EXIT","100")),
+            "check2_apply_ok": to_bool(os.environ.get("C2_APPLY_OK")),
+            "check2_log_b64": os.environ.get("C2_B64",""),
+
+            "check3_exit": int(os.environ.get("C3_EXIT","100")),
+            "check3_apply_ok": to_bool(os.environ.get("C3_APPLY_OK")),
+            "check3_log_b64": os.environ.get("C3_B64",""),
+          }
+
+          print(json.dumps(payload))
+          PY
+          true
