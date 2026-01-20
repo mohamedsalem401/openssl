@@ -220,39 +220,107 @@ jobs:
           C3_EXIT: ${{ steps.check3.outputs.c3_exit }}
         run: |
           set -euo pipefail
-          tailb(){ [ -f "$1" ] && tail -c 900000 "$1" | base64 -w0 || echo ""; }
 
-          C1_B64="$(tailb /tmp/logs/c1_test.log)"
-          C2_B64="$(tailb /tmp/logs/c2_test.log)"
-          C3_B64="$(tailb /tmp/logs/c3_test.log)"
+          python3 - <<'PY'
+          import os, json, base64
 
-          export C1_B64 C2_B64 C3_B64
+          # ---- knobs ----
+          # Max JSON payload size (bytes) to send to n8n.
+          # If your n8n/webhook accepts more, raise this.
+          MAX_JSON_BYTES = int(os.environ.get("MAX_JSON_BYTES", "12000000"))  # 12 MB default
 
-          python3 - <<'PY' | curl -sS -X POST "$CALLBACK_URL" -H "Content-Type: application/json" -d @-
-          import json, os
+          LOG_PATHS = {
+              "check1": "/tmp/logs/c1_test.log",
+              "check2": "/tmp/logs/c2_test.log",
+              "check3": "/tmp/logs/c3_test.log",
+          }
 
           def to_bool(v):
               return str(v).lower() in ("1","true","yes","on")
 
+          def tail_bytes(path: str, n: int) -> bytes:
+              if n <= 0:
+                  return b""
+              try:
+                  with open(path, "rb") as f:
+                      f.seek(0, 2)
+                      size = f.tell()
+                      start = max(0, size - n)
+                      f.seek(start, 0)
+                      return f.read()
+              except FileNotFoundError:
+                  return b""
+
+          def b64_tail(path: str, n: int) -> str:
+              raw = tail_bytes(path, n)
+              if not raw:
+                  return ""
+              return base64.b64encode(raw).decode("ascii")
+
+          # Build payload without logs first
           payload = {
-            "submission_id": os.environ["SUBMISSION_ID"],
-            "repo": os.environ["GITHUB_REPOSITORY"],
-            "github_run": os.environ["GITHUB_RUN_ID"],
-            "commit": "${{ inputs.commit_sha }}",
+              "submission_id": os.environ["SUBMISSION_ID"],
+              "repo": os.environ.get("GITHUB_REPOSITORY", ""),
+              "github_run": os.environ.get("GITHUB_RUN_ID", ""),
+              "commit": os.environ.get("GITHUB_SHA", ""),  # fallback; you also set commit below in the workflow if desired
 
-            "check1_exit": int(os.environ.get("C1_EXIT","100")),
-            "check1_apply_ok": to_bool(os.environ.get("C1_APPLY_OK")),
-            "check1_log_b64": os.environ.get("C1_B64",""),
+              "check1_exit": int(os.environ.get("C1_EXIT","100")),
+              "check1_apply_ok": to_bool(os.environ.get("C1_APPLY_OK")),
+              "check1_log_b64": "",
 
-            "check2_exit": int(os.environ.get("C2_EXIT","100")),
-            "check2_apply_ok": to_bool(os.environ.get("C2_APPLY_OK")),
-            "check2_log_b64": os.environ.get("C2_B64",""),
+              "check2_exit": int(os.environ.get("C2_EXIT","100")),
+              "check2_apply_ok": to_bool(os.environ.get("C2_APPLY_OK")),
+              "check2_log_b64": "",
 
-            "check3_exit": int(os.environ.get("C3_EXIT","100")),
-            "check3_apply_ok": to_bool(os.environ.get("C3_APPLY_OK")),
-            "check3_log_b64": os.environ.get("C3_B64",""),
+              "check3_exit": int(os.environ.get("C3_EXIT","100")),
+              "check3_apply_ok": to_bool(os.environ.get("C3_APPLY_OK")),
+              "check3_log_b64": "",
           }
 
-          print(json.dumps(payload))
+          # If you want the explicit input commit SHA (as in your original), prefer that via env:
+          # (GitHub expressions aren't available here; set COMMIT_SHA env in YAML if you want.)
+          commit_sha = os.environ.get("COMMIT_SHA")
+          if commit_sha:
+              payload["commit"] = commit_sha
+
+          # Compute how much room is left for logs.
+          base_json = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+          # Leave some slack for growth as we insert log strings
+          slack = 5120
+          budget = max(0, MAX_JSON_BYTES - len(base_json) - slack)
+
+          # Allocate budget roughly evenly across logs, but remember:
+          # base64 expands by ~4/3, plus JSON quotes. We'll be conservative.
+          # We'll allocate *raw bytes* per log, then b64 it.
+          per_log_raw = max(0, int((budget / 3) * 0.70))  # 0.70 keeps us under after base64+json overhead
+
+          # Fill logs from the end (most useful)
+          payload["check1_log_b64"] = b64_tail(LOG_PATHS["check1"], per_log_raw)
+          payload["check2_log_b64"] = b64_tail(LOG_PATHS["check2"], per_log_raw)
+          payload["check3_log_b64"] = b64_tail(LOG_PATHS["check3"], per_log_raw)
+
+          # If we still exceed MAX_JSON_BYTES (possible with weird overhead), shrink iteratively.
+          def encoded_size(p) -> int:
+              return len(json.dumps(p, separators=(",", ":")).encode("utf-8"))
+
+          size = encoded_size(payload)
+          if size > MAX_JSON_BYTES:
+              # shrink all logs together until it fits
+              shrink_raw = per_log_raw
+              for _ in range(20):
+                  if size <= MAX_JSON_BYTES:
+                      break
+                  shrink_raw = int(shrink_raw * 0.75)
+                  payload["check1_log_b64"] = b64_tail(LOG_PATHS["check1"], shrink_raw)
+                  payload["check2_log_b64"] = b64_tail(LOG_PATHS["check2"], shrink_raw)
+                  payload["check3_log_b64"] = b64_tail(LOG_PATHS["check3"], shrink_raw)
+                  size = encoded_size(payload)
+
+          with open("/tmp/n8n_payload.json", "wb") as f:
+              f.write(json.dumps(payload).encode("utf-8"))
           PY
+
+          # POST the file (no huge args/env)
+          curl -sS -X POST "$CALLBACK_URL" -H "Content-Type: application/json" --data-binary @/tmp/n8n_payload.json
+          echo
           true
