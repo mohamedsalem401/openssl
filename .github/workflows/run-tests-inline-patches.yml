@@ -71,9 +71,9 @@ jobs:
       - name: Decode patches
         shell: bash
         env:
-          TEST_PATCH_B64: ${{ inputs.test_patch_b64 }}
-          GOLDEN_PATCH_B64: ${{ inputs.golden_patch_b64 }}
-          BASE_PATCH_B64: ${{ inputs.base_patch_b64 }}
+          TEST_PATCH_B64: $
+          GOLDEN_PATCH_B64: $
+          BASE_PATCH_B64: $
         run: |
           set -euo pipefail
           mkdir -p /tmp/patches /tmp/logs
@@ -98,7 +98,7 @@ jobs:
         shell: bash
         run: |
           set +e; set -o pipefail
-          git checkout --force "${{ inputs.commit_sha }}"
+          git checkout --force "$"
           git reset --hard; git clean -fdx
 
           APPLY_OK=true
@@ -120,7 +120,7 @@ jobs:
           fi
 
           if [[ "$APPLY_OK" == "true" ]]; then
-            bash -lc "${{ inputs.test_cmd }}" 2>&1 | tee /tmp/logs/c1_test.log
+            bash -lc "$" 2>&1 | tee /tmp/logs/c1_test.log
             echo "c1_exit=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
           fi
 
@@ -132,7 +132,7 @@ jobs:
         shell: bash
         run: |
           set +e; set -o pipefail
-          git checkout --force "${{ inputs.commit_sha }}"
+          git checkout --force "$"
           git reset --hard; git clean -fdx
 
           APPLY_OK=true
@@ -154,7 +154,7 @@ jobs:
           fi
 
           if [[ "$APPLY_OK" == "true" ]]; then
-            bash -lc "${{ inputs.test_cmd }}" 2>&1 | tee /tmp/logs/c2_test.log
+            bash -lc "$" 2>&1 | tee /tmp/logs/c2_test.log
             echo "c2_exit=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
           fi
 
@@ -166,7 +166,7 @@ jobs:
         shell: bash
         run: |
           set +e; set -o pipefail
-          git checkout --force "${{ inputs.commit_sha }}"
+          git checkout --force "$"
           git reset --hard; git clean -fdx
 
           APPLY_OK=true
@@ -196,7 +196,7 @@ jobs:
           fi
 
           if [[ "$APPLY_OK" == "true" ]]; then
-            bash -lc "${{ inputs.test_cmd }}" 2>&1 | tee /tmp/logs/c3_test.log
+            bash -lc "$" 2>&1 | tee /tmp/logs/c3_test.log
             echo "c3_exit=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
           fi
 
@@ -207,17 +207,17 @@ jobs:
         if: always()
         shell: bash
         env:
-          CALLBACK_URL: ${{ inputs.callback_url }}
-          SUBMISSION_ID: ${{ inputs.submission_id }}
+          CALLBACK_URL: $
+          SUBMISSION_ID: $
 
-          C1_APPLY_OK: ${{ steps.check1.outputs.c1_apply_ok }}
-          C1_EXIT: ${{ steps.check1.outputs.c1_exit }}
+          C1_APPLY_OK: $
+          C1_EXIT: $
 
-          C2_APPLY_OK: ${{ steps.check2.outputs.c2_apply_ok }}
-          C2_EXIT: ${{ steps.check2.outputs.c2_exit }}
+          C2_APPLY_OK: $
+          C2_EXIT: $
 
-          C3_APPLY_OK: ${{ steps.check3.outputs.c3_apply_ok }}
-          C3_EXIT: ${{ steps.check3.outputs.c3_exit }}
+          C3_APPLY_OK: $
+          C3_EXIT: $
         run: |
           set -euo pipefail
 
